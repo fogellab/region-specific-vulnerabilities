@@ -1,6 +1,6 @@
 #!/bin/sh
 
-#for i in SRR6819407 SRR6819410; do echo $i; done | xargs -I{} -n 1 -P 10 prefetch {}; /home/dtommasini/scripts/RNAseq_parallel_paired_reverse.sh 
+# Example call: for i in SRR6819407 SRR6819410; do echo $i; done | xargs -I{} -n 1 -P 10 prefetch {}; /home/dtommasini/scripts/RNAseq_parallel_paired_reverse.sh 
 
 for accession in SRR*
 do
