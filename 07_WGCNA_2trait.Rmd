@@ -1,0 +1,1080 @@
+---
+title: "4.32_INSERTNAME_settings4.25t4.26e_MultipleTraitColumns"
+author: "Shradha Mukherjee"
+date: "December 18, 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#checkpoints for running this pipeline, replace these files and rename variables based on study of interest
+1) The htseq counts were copied from (neurofogel, smukherjee, home) \New\New2018\RNA-seq_STAR_noReSEQ\HTSEQ are put in a folder created called "Input". 
+2) The genes.gtf file was copied from (neurofogel, smukherjee, home)\mm10\Annotation\Genes and put in the working directory 
+3) Step1to Step4 is normalization of the RNA-seq count data and merging them into a single file. Will use RPKM like Berto et al 2016. 
+4) Step5 contains notes on manual editing and preparation of metadata file or actual metadata file can be prepared here 
+5) Step6 contains VST normalization that utilizes counts and trait information 
+
+6) For WGCNA use input expression file created in steps 1 to 5 "INSERTNAME_RPKM.csv" 
+7) For WGCNA use trait file described in step 6, "INSERTNAME_Trait_edited.csv" 
+8) For WGCNA select module label of interest "INSERTNAME" using global replace Ctrl+F to replace it with your label of interest
+
+9) Refences, acknowledgements and key parameters
+This code is adapted from a) Coppola Lab WGCNA code b)Konopka lab RNA-seq_STAR.sh and normalization code c) Fogel lab's RNA-seq pipeline, normalization and WGCNA codes d) Geshwind lab Mamdani 2015, Miller 2010 meta-analysis, Gandal 2018 codes e) Steve Horvath and Peter Langfelder several WGCNA codes/tutorials
+This pipeline has the following key parameters 
+deepSplit=4, minModuleSize=100, MEDissThres=0.00, power or softPower=12, 
+uses "signed" network and "person correlation",
+pamRespectsDendro=FALSE (default with pamStage=TRUE default)
+Original code for Step2 to Step4 was provided by Stefano, Jessie and Kathie modified it to use for UCSC gtf file 
+ref: L:\BLFLabShare\Shradha\FogelLabCodes\Count2KathieJessieStefano.R
+
+#Installing packages if not already installed
+source("https://bioconductor.org/biocLite.R")
+biocLite(c("SeqGSEA","GEOquery", "WGCNA", "flashClust", "stringr", "filesstrings", "flashClust"))
+
+## R Markdown
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+#Step1: Save working directory
+
+```{r}
+original<-getwd()
+original
+```
+
+#Step2: Get location and calculate gene length from annotation file (use same gtf file that was used for mapping)
+```{r}
+# Library to load
+library(GenomicFeatures)
+library(rtracklayer)
+GTFfile = "genes.gtf" # gtf for mm10
+GTF <- import.gff(GTFfile, format="gtf", feature.type="CDS") # For gene body use "gene" for NCBI annotation and "CDS" for UCSC gtf
+grl <- reduce(split(GTF, elementMetadata(GTF)$gene_name))
+reducedGTF <- unlist(grl, use.names=T)
+elementMetadata(reducedGTF)$gene_name <- rep(names(grl), elementNROWS(grl))
+elementMetadata(reducedGTF)$widths <- width(reducedGTF)
+calc_length <- function(x) {
+sum(elementMetadata(x)$widths)
+}
+output <- t(sapply(split(reducedGTF, elementMetadata(reducedGTF)$gene_name), calc_length))
+df=t(output)
+df=as.data.frame(df)
+colnames(df) <- c("Length")
+write.table(df,"from_gtf_length_genebody.txt",sep="\t",quote=F)
+```
+
+```{r}
+# Length for GeneBody = Total RNA
+#THIS IS MOUSE DATA USE MOUSE FILE, change if human
+length=read.table("from_gtf_length_genebody.txt")
+head(length)
+```
+
+#Step3: is binding the files into a single input Count file
+```{r}
+#Read in list of Count files and make sure the colnames are V1 and V2
+setwd("./Input")
+Countlist = list.files(pattern = '*.txt')
+Countfiles = lapply(Countlist, read.table, header=FALSE, sep="\t",fill=TRUE)
+head(Countfiles[[1]])
+#restore back to original working directory
+setwd(original)
+```
+
+```{r}
+setwd("./Input")
+
+Count <- Reduce(function(x, y) {
+    merge(x, y, all=TRUE, by="V1")
+}, Countfiles)
+rownames(Count)=Count$V1
+Count$V1=NULL
+colnames(Count)<-Countlist
+#Change the gsub command below based on file name
+colnames(Count) <- gsub("_Aligned.sortedByCoord.out.bam.LastLinesRem.txt","",colnames(Count))
+head(Count)
+#restore back to original working directory
+setwd(original)
+```
+
+#Step4: From count to rpkm, cpm, tpm and their log versions
+```{r}
+#filter count by genes listed in length file so that they are matched
+Count_filt <- Count[match(rownames(length),rownames(Count)),]
+head(Count_filt)
+write.csv(Count_filt, "INSERTNAME_Count_merged_matchedToGtf.csv")
+```
+
+```{r}
+#Here Count_filt rows and Count rows shows the difference due to matching with gene names in length file
+dim(Count)
+dim(Count_filt)
+```
+
+```{r}
+library(edgeR)
+CPM<-cpm(Count_filt,normalized.lib.sizes=TRUE)
+logCPM <- log2(CPM+1)
+write.csv(CPM,"INSERTNAME_CPM.csv")
+write.csv(logCPM,"INSERTNAME_log2CPM.csv")
+```
+
+```{r}
+tpm <- function(counts, lengths) {
+  rate <- counts / lengths
+  rate / sum(rate) * 1e6
+}
+
+TPM=apply(Count_filt, 2, function(x) tpm(x, length$Length))
+logTPM=log2(TPM+1)
+write.csv(logTPM,"INSERTNAME_logTPM.csv") 
+write.csv(TPM,"INSERTNAME_TPM.csv") 
+```
+
+```{r}
+library(edgeR)
+RPKM=rpkm(Count_filt,length$Length)
+logRPKM=log2(RPKM+1)
+write.csv(logRPKM,"INSERTNAME_logRPKM.csv") 
+write.csv(RPKM,"INSERTNAME_RPKM.csv") 
+```
+
+#Step5 creating trait data for WGCNA
+Used colnames of RPKM and created Trait.csv  to contain interest_trait_chr and interest_trait_coded columns
+```{r}
+INSERTNAME_Trait_edited=read.csv("INSERTNAME_Trait_edited.csv", header=T, sep=",")
+head(INSERTNAME_Trait_edited)
+```
+
+#Step6 from count to VST
+```{r}
+library(DESeq2)
+library(limma)
+```
+
+```{r}
+#In all cases, the transformation is scaled such that for large counts, it becomes asymptotically (for large values) equal to the logarithm to base 2 of normalized counts. 
+#conditions=INSERTNAME_Trait_edited$interest_trait_chr
+#group=factor(conditions)
+#cds=newCountDataSet(countData=Count_filt, conditions=group)
+#cds=estimateSizeFactors(cds)
+#cds=estimateDispersions(cds, method='blind', fitType="local")
+#VST=getVarianceStabilizedData(cds) #VST normalization of counts
+#logVST=log2(VST+1)
+
+#write.csv(logVST,"INSERTNAME_logVST.csv") 
+#write.csv(VST,"INSERTNAME_VST.csv") 
+```
+
+###################################WGCNA begins here and code is identical to the blockwise module detection##############################################################################
+
+#Step7 Load required libraries
+```{r}
+library(WGCNA)
+options(stringsAsFactors=FALSE)
+library(flashClust)
+library(stringr)
+library(filesstrings)
+```
+
+#Step8 Input htseq count VST normalized data for RNA-seq or expression data normalized for microarray
+```{r}
+data = read.csv("INSERTNAME_RPKM.csv", header=T, sep=',')
+
+#data=data[,-1] #uncomment is mutiple gene name columns
+
+#data = read.table("datExpr.txt") #uncomment to import txt file
+
+head(data[1:3,1:3])
+```
+
+```{r}
+#skip this step if did not import csv file
+data_1=data[,-1]
+rownames(data_1)=data$X
+data=data_1
+head(data[1:3,1:3])
+```
+
+#Step9 Cluster Samples
+```{r}
+#For rows=samples, and columns=genes do transpose 
+datExpr=as.data.frame(t(data))
+#check the data, looks good!
+datExpr[,1:3]
+```
+
+```{r}
+names(datExpr)=rownames(data)
+rownames(datExpr)=names(data)
+```
+
+```{r}
+#check for missing data or outlier samples
+gsg = goodSamplesGenes(datExpr, verbose = 3)
+```
+
+```{r}
+gsg$allOK
+```
+
+```{r}
+#returned FALSE for this dataset, i.e. there is an outlier gene or sample. Use if statement to remove #outliers
+dim(datExpr)
+```
+
+```{r}
+if (!gsg$allOK)
+{
+# Remove the offending genes and samples from the data:
+datExpr = datExpr[gsg$goodSamples, gsg$goodGenes]
+}
+#Output = Removed a bunch of genes that had zero variance, missing values, etc
+dim(datExpr)
+```
+
+```{r}
+#show cluster of sample and visually check for outlier samples
+pdf(file="1-INSERTNAME_sampleClustering_dynamic.pdf", width = 12, height = 9)
+sampleTree = hclust(dist(datExpr), method = "average");
+par(mar = c(0,4,2,0))
+par(oma=c(1,1,1,1))
+plot(sampleTree, main = "Sample clustering to detect outliers", sub="", xlab="", cex.lab = 1.5,cex.main=2)
+#dev.print(pdf, "1-INSERTNAME_sampleClustering_dynamic.pdf", width = 12, height = 9)
+dev.off()
+```
+
+#Step10 OPTIONAL SELECT ALL GENES OR ALTERNATIVELY SELECT TOP VARIABLE GENES USING ONE OF THE CODES BELOW
+
+```{r}
+#store row number or number of genes after goodsamplegoodgenes (GSGG)
+GSGGrow.no=dim(datExpr)[1]
+#store column number or number of samples after goodsamplegoodgenes
+GSGGcol.no=dim(datExpr)[2]
+```
+
+```{r}
+###Select All or top5000 genes###
+var = apply(datExpr, 2, var)
+#head(var)
+dat = rbind(datExpr,var)
+#rownames(dat) = c(samples, "variance")
+rownames(dat) = c(rownames(datExpr), "variance")
+dat2 = dat[,order(dat["variance",], decreasing=T)] #order columns by variance
+
+dat2[,1:3] #check that variance is in order
+dim(dat2)
+#Use one of the two lines below to select top5000 or all genes respectively
+#dat1 = dat2[1:GSGGrow.no,1:5000] #option1: keep top5000 goodsamplegoodgenes
+dat1 = dat2[1:GSGGrow.no,1:GSGGcol.no] #option2: keep ALL goodsamplegoodgenes
+dim(dat1)
+datExpr2 = dat1
+```
+
+#SELECTION OF GENES DONE NOW CODE BELOW CONTINUE WEATHER ALL GENES OR ALTERNATIVELY TOP VARIABLE GENES WERE SELECTED
+
+#Step11 Choosing soft threshold power
+```{r}
+pdf(file="2-INSERTNAME_power_dynamic.pdf",height=10,width=18)
+powers = c(c(1:10), seq(from = 12, to=40, by=2))
+sft = pickSoftThreshold(datExpr2, powerVector = powers, verbose = 5)
+#pickSoftThreshold takes about 15-20min to finish
+par(mfrow = c(1,2));
+cex1 = 0.9;
+#scale-free topology fit index as function of soft-thresholding power
+plot(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
+xlab="Soft Threshold (power)",ylab="Scale Free Topology Model Fit,signed R^2",type="n",
+main = paste("Scale independence"));
+text(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
+labels=powers,cex=cex1,col="red");
+#this line corresponds to using R^2 cut-off of h
+abline(h=0.90,col="red")
+# Mean connectivity as a function of the soft-thresholding power
+plot(sft$fitIndices[,1], sft$fitIndices[,5],
+xlab="Soft Threshold (power)",ylab="Mean Connectivity", type="n",
+main = paste("Mean connectivity"))
+text(sft$fitIndices[,1], sft$fitIndices[,5], labels=powers, cex=cex1,col="red")
+#dev.print(pdf, "2-INSERTNAME_power_dynamic.pdf",height=10,width=18)
+dev.off()
+```
+
+```{r}
+#sft$powerEstimate is systems best guess
+softPower=sft$powerEstimate
+softPower
+#to change system recommended softpower NA changed to choosen one 12 lower power is not recommended for WGCNA signed network 
+softPower=12
+softPower
+```
+
+###################################Here onwards the code is DIFFERENT from the blockwise module detection, variables labeled or called 'dynamic' instead of 'block'#######################
+
+#Step12 Adjacency and TOM
+
+```{r}
+library(flashClust)
+#calculate adjacency
+adjacency = adjacency(datExpr2, power=softPower, type="signed");
+#Topological overlap matrix (TOM), turn adjacency into topological overlap
+TOM = TOMsimilarity(adjacency);
+dissTOM = 1-TOM
+```
+
+```{r}
+#For clustering using TOM, 
+#call the hierarchical clustering function 
+geneTree = flashClust(as.dist(dissTOM), method="average");
+
+#plot the resulting tree (dendrogram)
+pdf(file="3-INSERTNAME_Gene clustering_dynamic.pdf", height=10, width=15)
+plot(geneTree, xlab="", sub="", main="Gene clustering on TOM-based dissimilarity", labels=FALSE, hang=0.04);
+#dev.print(pdf,"3-INSERTNAME_Gene clustering_dynamic.pdf", height=10, width=15)
+dev.off()
+```
+
+```{r}
+#minimum module size is specified in this step
+minModuleSize = 100;
+#module identification using dynamic tree cut
+dynamicMods= cutreeDynamic(dendro=geneTree, distM=dissTOM, cutHeight=0.995, deepSplit=4, pamRespectsDendro=FALSE, minClusterSize=minModuleSize, verbose=2);
+table(dynamicMods)
+#convert numberic labels into colors
+dynamicColors = labels2colors(dynamicMods)
+table(dynamicColors)
+#create labels for modules too
+library(stringr)
+dynamicLabels <- paste("INSERTNAME_", str_pad(dynamicMods, 2, pad="0"), sep="")
+#the pad number ex 1 becomes 01
+```
+
+###################################Here onwards the code is again identical to the blockwise module detection, variables labeled with called 'dynamic' instead of 'block'#################
+
+```{r}
+dim(table(dynamicColors))
+dim(table(dynamicMods))
+dim(table(dynamicLabels))
+```
+
+```{r}
+head(table(dynamicColors))
+head(table(dynamicMods))
+head(table(dynamicLabels))
+```
+
+```{r}
+#Plot the dendrogram and colors underneath
+pdf(file="4-INSERTNAME_Gene dendrogram and module colors_dynamic.pdf", height=10, width=15)
+plotDendroAndColors(geneTree, dynamicColors, "Dynamic Tree Cut", dendroLabels=FALSE, hang=0.03, addGuide=TRUE, guideHang=0.05, main="Gene dendrogram and module colors")
+#dev.print(pdf,"4-INSERTNAME_Gene dendrogram and module colors_dynamic.pdf", height=10, width=15)
+dev.off()
+```
+
+```{r}
+pdf(file="5-INSERTNAME_Gene dendrogram and module labels_dynamic.pdf", height=10, width=15)
+plotDendroAndColors(geneTree, dynamicColors,
+c("Dynamic Tree Cut"),dendroLabels = FALSE, hang = 0.03,
+addGuide = TRUE, guideHang = 0.05)
+#dev.print(pdf,"5-INSERTNAME_Clustering of module eigengene_dynamic.pdf", height=10, width=15)
+dev.off()
+```
+
+#Step13 Save module size, module gene list, intramodular connectivity and signedkME data
+
+```{r}
+#WITH COLORS 
+#save merged gene list txt file with module colors
+module_names = setdiff(unique(dynamicColors), "grey")
+gene_names = rownames(t(datExpr2))
+for(label in module_names){
+  module=gene_names[which(dynamicColors==label)]
+  write.table(module, paste("INSERTNAME_", label, ".txt", sep=""), sep="\t", row.names=F, col.names=F, quote=F)
+}
+```
+
+```{r}
+#WITH LABELS
+#save merged gene list txt file with module labels
+module_names = setdiff(unique(dynamicLabels), "grey")
+gene_names = rownames(t(datExpr2))
+for(label in module_names){
+  module=gene_names[which(dynamicLabels==label)]
+  write.table(module, paste(label, ".txt", sep=""), sep="\t", row.names=F, col.names=F, quote=F)
+}
+```
+
+```{r}
+#adjacency already calulated in stepwise module detection
+#Summary output of network analysis results for colors in moduleColors
+mydata = t(datExpr2)
+mydata2 = cbind(mydata, dynamicColors, dynamicLabels)
+write.csv(mydata2,file="INSERTNAME_datExpr2_dynamiccolors_dynamiclabels.csv")
+degrees1=intramodularConnectivity(adjacency, dynamicColors)
+head(degrees1)
+```
+
+```{r}
+#want to make summary file with genes, genes intramodular connectivity, dynamicColors and dynamicLabels
+mydata = t(datExpr2)
+mydata2 = cbind(mydata, degrees1, dynamicColors, dynamicLabels)
+write.csv(mydata2,file="INSERTNAME_datExpr2_ksummary_dynamiccolors_dynamiclabels.csv")
+```
+
+```{r}
+#WITH LABELS
+#save merged gene list txt file with module labels
+#module_names = setdiff(unique(dynamicLabels), "grey")
+#gene_names = mydata2[order(-mydata2$kWithin),]$X
+#for(label in module_names){
+#  module=gene_names[which(mydata2[order(-mydata2$kWithin),]$dynamicLabels==label)]
+#  write.table(module, paste(label, ".txt", sep=""), sep="\t", row.names=F, col.names=F, quote=F)
+#}
+```
+
+```{r}
+#with colors
+# Calculate eigengenes
+MEList = moduleEigengenes(datExpr2, colors = dynamicColors, softPower= softPower, nPC=1)
+MEs = MEList$eigengenes
+
+pdf(file="7-INSERTNAME_eigengenes-b_dynamic.pdf",height=9,width=9)
+par(cex = 0.6)
+plotEigengeneNetworks(MEs, "", marDendro = c(0,8,1,2), marHeatmap = c(5,8,1,2), cex.adjacency = 0.3 , cex.preservation = 0.3, plotPreservation = "standard")
+#dev.print(pdf,"7-INSERTNAME_eigengenes-b_dynamic.pdf",height=9,width=9)
+dev.off()
+```
+
+```{r}
+#with labels
+# Calculate eigengenes
+MEListL = moduleEigengenes(datExpr2, colors = dynamicLabels, softPower= softPower, nPC=1)
+MEsL = MEListL$eigengenes
+
+pdf(file="7L-INSERTNAME_eigengenes-b_dynamic.pdf",height=9,width=9)
+par(cex = 0.6)
+plotEigengeneNetworks(MEsL, "", marDendro = c(0,8,1,2), marHeatmap = c(5,8,1,2), cex.adjacency = 0.3 , cex.preservation = 0.3, plotPreservation = "standard")
+#dev.print(pdf,"7L-INSERTNAME_eigengenes-b_dynamic.pdf",height=9,width=9)
+dev.off()
+```
+
+```{r}
+#Calculate signedkME. Higher the signed kME for a given gene higher its correlation with eigen gene i.e. its a hub gene for the given module Ref: Miller 2010, Gandal 2018
+geneMM=signedKME(datExpr2,MEs)
+colnames(geneMM)=paste(colnames(geneMM),".cor",sep="")
+MMPvalue=corPvalueStudent(as.matrix(geneMM),dim(datExpr2)[[1]])
+colnames(MMPvalue)=paste(colnames(MMPvalue),".pval",sep="")
+
+geneMML=signedKME(datExpr2,MEsL)
+colnames(geneMML)=paste(colnames(geneMML),".cor",sep="")
+MMPvalueL=corPvalueStudent(as.matrix(geneMML),dim(datExpr2)[[1]])
+colnames(MMPvalueL)=paste(colnames(MMPvalueL),".pval",sep="")
+```
+
+```{r}
+#want to make summary file with genes, signedkME, blockColors and blockLabels
+mydata3 = cbind(geneMM, MMPvalue, dynamicColors)
+mydata4 = cbind(geneMML, MMPvalueL, dynamicLabels)
+write.csv(mydata3,file="INSERTNAME_datExpr2_signedKME_dynamiccolors.csv")
+write.csv(mydata4,file="INSERTNAME_datExpr2_signedKME_dynamiclabels.csv")
+```
+
+```{r}
+write.csv(table(dynamicColors), file="INSERTNAME_final_dynamiccolors.csv")
+write.csv(table(dynamicLabels), file="INSERTNAME_final_dynamiclabels.csv")
+#these make an csv file with the module colors or my labels and how many members are in each 
+```
+
+#Step14 Visualization of final modules, PC and eigengenes
+```{r}
+#heatmaps for module colors
+aa = read.csv("INSERTNAME_final_dynamiccolors.csv", header=T, row.names=1)
+MEss = MEs[,sort(colnames(MEs))]
+dim(aa)
+```
+
+```{r}
+pdf(file="8-INSERTNAME_heatmaps_dynamic.pdf")
+for (k in 1:length(rownames(aa))) {
+	whichmodule = aa$dynamicColors [k]
+	par(mfrow=c(2,1))
+	par(mar=c(3.5,3,2.5,3))
+	par(oma=c(4,0,2,0))
+	datcombined=datExpr2[,dynamicColors==whichmodule]
+	datcombined=datcombined[order(row.names(datcombined)),]
+	#sort so samples in order
+	scaledModExpr =scale(datcombined)
+	myEx = max(abs(scaledModExpr))
+	plotMat(t(scaledModExpr), main=paste(aa$dynamicColors [k], "(", aa$Freq[k], ")", sep=""))
+	names=sort(dimnames(datExpr2)[[1]])
+	#sort labels
+	numSamp = length(rownames(datExpr2))
+	datsv=MEss[,k]
+	whichmodule=aa$dynamicColors[k]
+	space=0.174
+	width=(10.65-(space*numSamp))/numSamp
+	xpos=seq(0.35+(width/2),11,width+space)
+	barplot(datsv,col="grey",xlim=c(0.35,11), width=width, space=space)
+	axis(side=1,at=xpos,labels=F,tick=T)
+	box()
+	mtext(names,1,at=xpos,cex=1,col="black",adj=1.2,las=3)
+	print(k)
+}
+dev.off()
+```
+
+```{r}
+#heatmaps for module LABELS
+aaL = read.csv("INSERTNAME_final_dynamiclabels.csv", header=T, row.names=1)
+MEssL = MEsL[,sort(colnames(MEsL))]
+dim(aaL)
+```
+
+```{r}
+pdf(file="8L-INSERTNAME_heatmaps_dynamic.pdf")
+for (k in 1:length(rownames(aaL))) {
+  	whichmodule = aaL$dynamicLabels[k]
+	par(mfrow=c(2,1))
+	par(mar=c(3.5,3,2.5,3))
+	par(oma=c(4,0,2,0))
+	datcombined=datExpr2[,dynamicLabels==whichmodule]
+	#datcombined=datcombined[order(row.names(datcombined)),] #sort so samples in order
+	scaledModExpr =scale(datcombined)
+	#myEx = max(abs(scaledModExpr))
+	#plotMat(t(scaledModExpr), main=paste(aaL$dynamicModsLabels[k], "(", aaL$Freq[k], ")", sep=""))
+	plotMat(t(scaledModExpr), main=paste(aaL$dynamicLabels[k], "(", aaL$Freq[k], ")", sep=""))
+	names=rownames(datcombined)
+	numSamp = length(rownames(datExpr2))
+	datsv=MEssL[,k]
+	whichmodule=aaL$dynamicLabels[k]
+	space=0.05
+	width=(11-(space*numSamp))/numSamp
+	#edited on 20201215 by DT
+	#xpos=seq(0.35+(width/2),11,width+space)
+	#barplot(datsv,col="grey",xlim=c(0.35,11), width=width, space=space)
+	#space in barplot takes that fraction of width variable, so we need to divide by width in order to make space equal space
+	barplot(datsv,col="grey",xlim=c(0.35,10.65), space=space/width, width=width, axisnames=TRUE, axis.lty=1, names.arg=names, las=2)
+	#axis(side=1,at=xpos,labels=F,tick=T)
+	#we include the x axis labels in the barplot using names.arg for the names and axis.lty for the tick marks
+	box()
+	#mtext(names,1,at=xpos,cex=1,col="black",adj=1.2,las=3)
+
+	print(k)
+}
+dev.off()
+```
+
+```{r}
+#Note if goodsamplegenes removes samples then Count or data variable sample definition won't hold true so we need to redefine the samples based on datExpr2 here
+samples=rownames(datExpr2)
+samples
+```
+
+```{r}
+#single plots module COLORS (moduleColors)
+PCvalues=MEs
+PCvalues= PCvalues[,order(names(PCvalues),decreasing=F)]
+modules=colnames(PCvalues)
+colorsMod=gsub("ME","",modules)
+library(stringr)
+mains=paste("INSERTNAME_", colorsMod, sep="")
+namesSamp=samples
+```
+
+```{r}
+pdf(file="9-INSERTNAME_singlePC_dynamic.pdf",width=10,height=10)
+#this makes 5x5 graphs per page, with margins so labels are cut off the page
+par(mfrow=c(5,5))
+par(oma=c(2,1,2,1))
+for (mod in 1:length(PCvalues)) {
+plot(smooth.spline(PCvalues[,mod]), xlab="", type="n", ylim=c(-0.5, 0.5), ylab="First PC", axes=F)
+abline(h=0)
+axis(1, at=1:length(namesSamp), labels=namesSamp, cex.axis=1, las=3)
+axis(2, at=seq(-0.5, 0.5, 0.5))
+#par here lets you plot a second graph on the same plot
+par(new=TRUE)
+barplot(PCvalues[,mod],col="white", ylim=c(-0.5, 0.5), axes=F,main=mains[mod])
+SecNumber=length(samples)+0.5 ##1.5 to Secondnumber or SecNumber just centers the line alittle between around the samples
+lines(smooth.spline(x=c(1.5:SecNumber),PCvalues[,mod], spar=0.3), col=colorsMod[mod],  lwd=4)
+}
+dev.off()
+```
+
+```{r}
+#single plots module LABELS (moduledynamicLabels)
+PCvaluesL=MEsL
+PCvaluesL= PCvaluesL[,order(names(PCvaluesL),decreasing=F)]
+modulesL=colnames(PCvaluesL)
+colorsModL=gsub("ME","",modulesL)
+colorsModL2=gsub("INSERTNAME_","",colorsModL)
+colorsModcolors = labels2colors(colorsModL2)
+mainsL=paste("INSERTNAME_", colorsModL2, sep="")
+namesSampL =samples
+```
+
+```{r}
+pdf(file="9L-INSERTNAME_singlePC_dynamic.pdf",width=10,height=10)
+#this makes 5x5 graphs per page, with margins so labels are cut off the page
+par(mfrow=c(5,5))
+par(oma=c(2,1,2,1))
+for (mod in 1:length(PCvaluesL)) {
+plot(smooth.spline(PCvaluesL[,mod]), xlab="", type="n", ylim=c(-0.5, 0.5), ylab="First PC", axes=F)
+abline(h=0)
+axis(1, at=1:length(namesSampL), labels=namesSampL, cex.axis=1, las=3)
+axis(2, at=seq(-0.5, 0.5, 0.5))
+#par here lets you plot a second graph on the same plot
+par(new=TRUE)
+barplot(PCvaluesL[,mod],col="white", ylim=c(-0.5, 0.5), axes=F,main=mainsL[mod])
+#keeping the module colors for the line, but using numbers for the main labels
+SecNumber=length(samples)+0.5 ##1.5 to Secondnumber or SecNumber just centers the line alittle between around the samples
+lines(smooth.spline(x=c(1.5:SecNumber),PCvaluesL[,mod], spar=0.3), col=colorsModcolors[mod],  lwd=4)
+}
+dev.off()
+```
+
+#Step15 plot module-traits relation
+#IMPORTANT CAUTION: In the Trait file the samples have to be the same order as the output in the column order in the count file, so make the Trait.csv after the Count file has been generated
+```{r}
+dim(datExpr2)
+head(datExpr2[,1:3])
+#datExpr2 contains the samples as rows and most variable probes 1 to 10000 as columns
+```
+
+```{r}
+nGenes = ncol(datExpr2);
+nSamples = nrow(datExpr2);
+nGenes
+nSamples
+```
+
+```{r}
+#Import trait data
+traitData=read.csv("INSERTNAME_Trait_edited.csv", header=T)
+dim(traitData)
+head(traitData)
+```
+
+```{r}
+#Normally may have different traits so here select whatever traits you need
+#Note if goodsamplegenes removes samples then Count or data variable sample definition won't hold true so we need to redefine the samples based on datExpr2 here
+save.image(file='4.32_INSERTNAME_settings4.25t4.26e_MultipleTraitColumns.RData')
+Traits=traitData[match(rownames(datExpr2), traitData$X),-1] #multiple trait columns selected
+rownames(Traits)=traitData[match(rownames(datExpr2), traitData$X),c("X")]
+#datTraits=Traits[,-which(names(Traits) %in% c("sample"))]
+datTraits=as.data.frame(Traits)
+head(datTraits)
+```
+
+```{r}
+#This is for color labeled modules
+moduleTraitCor = cor(MEs, datTraits, use = "p");
+moduleTraitPvalue = corPvalueStudent(moduleTraitCor, nSamples);
+colnames(moduleTraitPvalue) = paste("p.value.", colnames(moduleTraitCor), sep="");
+out3<-cbind(Module=rownames(moduleTraitCor ), moduleTraitCor, moduleTraitPvalue)
+dim(out3)
+write.table(out3, "INSERTNAME_heatmap_moduleTraitCor.csv", sep=",",row.names=F)
+```
+
+```{r}
+pdf(file="10-INSERTNAME_heatmap_moduleTraitCor_dynamic.pdf", width=5,height=15)
+textMatrix = paste( signif(moduleTraitCor, 2), '\n(', 
+					   signif(moduleTraitPvalue, 1), ')', sep = ''
+					   );
+dim(textMatrix) = dim(moduleTraitCor);
+par( mar = c(8, 9, 3, 3) );
+labeledHeatmap( Matrix = moduleTraitCor,
+				xLabels = names(datTraits),
+				yLabels = names(MEs),
+				ySymbols = names(MEs),
+				colorLabels = F,
+				colors = blueWhiteRed(50),
+				textMatrix = textMatrix,
+				setStdMargins = F,
+				cex.text = 0.25,
+				zlim = c(-1, 1),
+        cex.lab.y = 0.25,
+				main = paste("module-trait relationships")
+				); 
+sig = moduleTraitPvalue < (.05 / (ncol(moduleTraitPvalue) * nrow(moduleTraitPvalue)));
+#dev.print(pdf,"10-INSERTNAME_heatmap_moduleTraitCor_dynamic.pdf", width=5,height=10)
+dev.off()
+#In the exported pdf this plot looks better
+```
+
+```{r}
+#This is for dynamic labeled named modules
+#Note datTraits file and nSamples remains the same
+moduleTraitCorL = cor(MEsL, datTraits, use = "p");
+moduleTraitPvalueL = corPvalueStudent(moduleTraitCorL, nSamples);
+colnames(moduleTraitPvalueL) = paste("p.value.", colnames(moduleTraitCorL), sep="");
+out3L<-cbind(Module=rownames(moduleTraitCorL ), moduleTraitCorL, moduleTraitPvalueL)
+dim(out3L)
+write.table(out3L, "INSERTNAME_heatmap_modulelabelsTraitCor.csv", sep=",",row.names=F)
+#
+
+#{r}
+pdf(file="10L-INSERTNAME_heatmap_moduleTraitCor_dynamic.pdf", width=5,height=15)
+textMatrixL = paste( signif(moduleTraitCorL, 2), '\n(', 
+                     signif(moduleTraitPvalueL, 1), ')', sep = ''
+);
+dim(textMatrixL) = dim(moduleTraitCorL);
+par( mar = c(8, 9, 3, 3) );
+labeledHeatmap( Matrix = moduleTraitCorL,
+                xLabels = names(datTraits),
+                yLabels = names(MEsL),
+                ySymbols = names(MEsL),
+                colorLabels = F,
+                colors = blueWhiteRed(50),
+                textMatrix = textMatrixL,
+                setStdMargins = F,
+                cex.text = 0.25,
+                zlim = c(-1, 1),
+                cex.lab.y = 0.25,
+                main = paste("module-trait relationships")
+); 
+sig = moduleTraitPvalueL < (.05 / (ncol(moduleTraitPvalueL) * nrow(moduleTraitPvalueL)));
+#dev.print(pdf,"10L-INSERTNAME_heatmap_moduleTraitCor_dynamic.pdf", width=5,height=10)
+dev.off()
+```
+
+###Single Principal Component Plots with sample Trait###
+#Here we generate plots same as 9 and 9L, but here the sample numbers are replaced by the trait of our interest
+```{r}
+Trait_chr=traitData[match(rownames(datExpr2), traitData$X),c("interest_trait_chr")]
+Trait_chr
+```
+
+```{r}
+#single plots module COLORS (moduleColors)
+PCvalues=MEs
+PCvalues= PCvalues[,order(names(PCvalues),decreasing=F)]
+modules=colnames(PCvalues)
+colorsMod=gsub("ME","",modules)
+library(stringr)
+mains=paste("INSERTNAME_", colorsMod, sep="")
+namesSamp=Trait_chr
+```
+
+```{r}
+pdf(file="9.1-INSERTNAME_singlePC_dynamic.pdf",width=10,height=10)
+#this makes 5x5 graphs per page, with margins so labels are cut off the page
+par(mfrow=c(5,5))
+par(oma=c(2,1,2,1))
+for (mod in 1:length(PCvalues)) {
+plot(smooth.spline(PCvalues[,mod]), xlab="", type="n", ylim=c(-0.5, 0.5), ylab="First PC", axes=F)
+abline(h=0)
+axis(1, at=1:length(namesSamp), labels=namesSamp, cex.axis=0.5, las=3)
+axis(2, at=seq(-0.5, 0.5, 0.5))
+#par here lets you plot a second graph on the same plot
+par(new=TRUE)
+barplot(PCvalues[,mod],col="white", ylim=c(-0.5, 0.5), axes=F,main=mains[mod])
+SecNumber=length(samples)+0.5 ##1.5 to Secondnumber or SecNumber just centers the line alittle between around the samples
+lines(smooth.spline(x=c(1.5:SecNumber),PCvalues[,mod], spar=0.3), col=colorsMod[mod],  lwd=4)
+}
+dev.off()
+```
+
+```{r}
+#single plots module LABELS (moduledynamicLabels)
+PCvaluesL=MEsL
+PCvaluesL= PCvaluesL[,order(names(PCvaluesL),decreasing=F)]
+modulesL=colnames(PCvaluesL)
+colorsModL=gsub("ME","",modulesL)
+colorsModL2=gsub("INSERTNAME_","",colorsModL)
+colorsModcolors = labels2colors(colorsModL2)
+mainsL=paste("INSERTNAME_", colorsModL2, sep="")
+namesSampL =Trait_chr
+```
+
+```{r}
+pdf(file="9L.1-INSERTNAME_singlePC_dynamic.pdf",width=10,height=10)
+#this makes 5x5 graphs per page, with margins so labels are cut off the page
+par(mfrow=c(5,5))
+par(oma=c(2,1,2,1))
+for (mod in 1:length(PCvaluesL)) {
+plot(smooth.spline(PCvaluesL[,mod]), xlab="", type="n", ylim=c(-0.5, 0.5), ylab="First PC", axes=F)
+abline(h=0)
+axis(1, at=1:length(namesSampL), labels=namesSampL, cex.axis=0.5, las=3)
+axis(2, at=seq(-0.5, 0.5, 0.5))
+#par here lets you plot a second graph on the same plot
+par(new=TRUE)
+barplot(PCvaluesL[,mod],col="white", ylim=c(-0.5, 0.5), axes=F,main=mainsL[mod])
+#keeping the module colors for the line, but using numbers for the main labels
+SecNumber=length(samples)+0.5 ##1.5 to Secondnumber or SecNumber just centers the line alittle between around the samples
+lines(smooth.spline(x=c(1.5:SecNumber),PCvaluesL[,mod], spar=0.3), col=colorsModcolors[mod],  lwd=4)
+}
+dev.off()
+```
+
+```{r}
+#To save space and memory run code below, and then do not need to save .R or workspace can reload data environment silply by uncommenting code below
+#load(file="temp.RData")
+#save.image(file="temp.RData")
+#rm(list=ls())
+#gc()
+```
+
+###check if modules have significant correlation and p-value to trait of interest### 
+```{r}
+Mod_corrTrait=read.csv("INSERTNAME_heatmap_modulelabelsTraitCor.csv", header=TRUE, sep=',')
+head(Mod_corrTrait)
+```
+
+```{r}
+Mod_corrTrait_interest_trait_code_sig=Mod_corrTrait[Mod_corrTrait$p.value.interest_trait_code<=0.05,]
+Mod_corrTrait_interest_trait_code_sig=Mod_corrTrait_interest_trait_code_sig[order(Mod_corrTrait_interest_trait_code_sig$p.value.interest_trait_code),]
+#By default, sorting is ASCENDING
+Mod_corrTrait_interest_trait_code_sig
+write.csv(Mod_corrTrait_interest_trait_code_sig,"Mod_corrTrait_interest_trait_code_sig.csv")
+```
+
+###check if number of modules are too many or to few and if biggest module has too many or too few genes 
+#Import new module data we got from our analysis containing genes, VST counts, module and module information summary file from this analysis folder INSERTNAME_datExpr2_ksummary_dynamiccolors_dynamiclabels.csv
+```{r}
+dat1=read.csv('INSERTNAME_datExpr2_ksummary_dynamiccolors_dynamiclabels.csv', sep=',')
+head(dat1)
+```
+
+```{r}
+dat1GeneMod=dat1[,c("X","dynamicColors","dynamicLabels")]
+colnames(dat1GeneMod)=c("Gene","dynamicColors","dynamicLabels")
+dat1GeneMod[1:3,]
+```
+
+```{r}
+dat1GeneMod_table<-as.data.frame(table(dat1GeneMod$dynamicLabels))
+dat1GeneMod_table<-dat1GeneMod_table[order(-dat1GeneMod_table$Freq),]
+write.csv(dat1GeneMod_table,"INSERTNAME_final_dynamiccolors_sorted.csv")
+#This result is same as "INSERTNAME_final_dynamiccolors.csv" but sorted
+
+dat1GeneMod_table2<-as.data.frame(table(dat1GeneMod$dynamicColors))
+dat1GeneMod_table2<-dat1GeneMod_table2[order(-dat1GeneMod_table2$Freq),]
+write.csv(dat1GeneMod_table2,"INSERTNAME_final_dynamiclabels_sorted.csv")
+#This reuslt is same as "INSERTNAME_final_dynamiclabels.csv" but sorted
+```
+
+```{r}
+#For dynamicColors
+#This is same as the dat1 file imported above
+dat1=dat1
+#Export genes ranked by net connectivity weight or kIM or IM for each module 
+for (i in unique(dat1GeneMod$dynamicColors)){
+  
+  #Select modules
+  modules= i
+  modules
+
+  #net gene Connectivity or weights is a.k.a. kIM or IM or kWithin
+  dat1_sel=dat1[which(dynamicColors==modules),] #select those rows which match module name
+  dat1_sort=dat1_sel[order(-dat1_sel$kWithin),] #order by stronger to weaker connectivity
+  
+  #net gene Connectivity ranks
+  dat1_sort$rank<- rank(-(dat1_sort$kWithin)) #This gives the highest kWithin the highest rank
+  #export output
+  write.table(dat1_sort, paste0("ForGenesInModule-", modules, "-allGenesInModuleRankedByNetKWithin.txt", sep=""),row.names=F, quote=F)
+}
+```
+
+```{r}
+#For dynamicLabels
+#This is same as the dat1 file imported above
+dat1=dat1
+#Export genes ranked by net connectivity weight or kIM or IM for each module 
+for (i in unique(dat1GeneMod$dynamicLabels)){
+  
+  #Select modules
+  modules= i
+  modules
+
+  #net gene Connectivity or weights is a.k.a. kIM or IM or kWithin
+  dat1_sel=dat1[which(dynamicLabels==modules),] #select those rows which match module name
+  dat1_sort=dat1_sel[order(-dat1_sel$kWithin),] #order by stronger to weaker connectivity
+  
+  #net gene Connectivity ranks
+  dat1_sort$rank<- rank(-(dat1_sort$kWithin)) #This gives the highest kWithin the highest rank
+  #export output
+  write.table(dat1_sort, paste0("ForGenesInModule-", modules, "-allGenesInModuleRankedByNetKWithin.txt", sep=""),row.names=F, quote=F)
+}
+```
+
+#Step16 Export files for Cytoscape network visualization using loop function where multiple modules are selected using variable 'i'
+#Ref1: https://scholarscompass.vcu.edu/cgi/viewcontent.cgi?article=5500&context=etd
+#Ref2: https://www.stat.wisc.edu/~yandell/statgen/ucla/WGCNA/wgcna.html
+```{r}
+#Import module names and corrosponding gene names from WGCNA summary file 'INSERTNAME_datExpr2_ksummary_dynamiccolors_dynamiclabels.csv' from analysis folder
+dat1=read.csv('INSERTNAME_datExpr2_ksummary_dynamiccolors_dynamiclabels.csv', sep=',')
+dat1GeneMod=dat1[,c("X","dynamicColors","dynamicLabels")]
+colnames(dat1GeneMod)=c("Gene","dynamicColors","dynamicLabels")
+dat1GeneMod[1:3,]
+#For MEDissThresh >0.05 for smaller merged modules, multiple colors can be assigned to the same moduledynamicLabels. So its better to use the final moduledynamicLabels for exporting for cytoscape and VisANT
+```
+
+```{r}
+#blockwise module TOM is "dist" matrix object so we need to convert it to what we need that is a regular matrix
+#our TOM is already loaded in the environment
+#TOM was calculated from 'adjacency'
+#Checking format of TOM, it needs to be a regular matrix
+typeof(TOM)
+is.matrix(TOM)
+str(TOM)
+class(TOM)
+```
+
+#VisANT Export 1
+```{r}
+#Export using already generated TOM and power
+TOM = TOM
+for (i in unique(dat1GeneMod$dynamicLabels)){
+  #We use original TOM that was used to build the modules. This is a matrix of matrices, with rows=columns=number of genes input into WGCNA. 
+  TOM = TOM
+  
+  #Select modules
+  modules= i
+  modules
+  
+  #We have many diffent moduledynalicLabels this function only keeps those moduledynamicLabels that match with our selected module name  
+  inModule = is.finite(match(dynamicLabels,modules))
+  #Select only those genes that are in the selected module. In keeping with microarrya nomenclature modProbes is the default name of the genes in modules    for the WGCNA package. 
+  probes = names(datExpr2)
+  modProbes = probes[inModule]
+  #modProbes = substring(modProbes,1,25)
+  length(modProbes)
+  #this number should match with the number of genes in the selected module name
+  
+  #Select the corresponding Topological Overlap for the selected module i.e. only those genes are selected that belong to the selected module
+  modTOM = TOM[inModule, inModule];
+  dimnames(modTOM) = list(modProbes, modProbes)
+  
+  #Export the network into files for VisANT for the selected module. 
+  vis = exportNetworkToVisANT(modTOM,file = paste("VisANTInput-", modules, "-allConnected.txt", sep=""),weighted = TRUE, threshold = 0)
+  vis[1:3,]
+  
+  #Using this files as input for visANT will be too many just look like a green blob
+  #Instead us this file as input for VisANT which is a selection of top400 and top 800 most connected genes. 
+  #Connectivity or weights is a.k.a. kIM or IM or kWithin 
+  vis_sort=vis[order(-vis$weight),] #order by stronger to weaker connectivity
+  #export output
+  write.table(vis_sort, paste0("VisANTInput-", modules, "-allConnectedSorted.txt", sep=""),row.names=F, col.names=F, quote=F)
+  #Connectivity ranks
+  vis_rank=vis_sort
+  colnames(vis_rank)=c("FromGene", "ToGene", "thresold", "VisANTID", "Weights_kIM_IM")
+  vis_rank$rank<- rank(-(vis_rank$Weights_kIM_IM)) #This gives the highest weight the highest rank
+  #export output
+  write.table(vis_rank, paste0("VisANTRanks-", modules, "-allConnectedRankedByWeight.txt", sep=""),row.names=F, quote=F)
+  
+  vis_top400wts=vis_sort[1:400,] #select only the top 400
+  #export output
+  write.table(vis_top400wts, paste0("VisANTInput-", modules, "-top400ConnectedSorted.txt", sep=""),row.names=F, col.names=F, quote=F)
+  #Connectivity ranks
+  vis_rank_top400wts=vis_top400wts
+  colnames(vis_rank_top400wts)=c("FromGene", "ToGene", "thresold", "VisANTID", "Weights_kIM_IM")
+  vis_rank_top400wts$rank<- rank(-(vis_rank_top400wts$Weights_kIM_IM)) #This gives the highest weight the highest rank
+  #export output
+  write.table(vis_rank_top400wts, paste0("VisANTRanks-", modules, "-top400ConnectedRankedByWeight.txt", sep=""),row.names=F, quote=F)
+  
+  vis_top800wts=vis_sort[1:800,] #select only the top 800
+  #export output
+  write.table(vis_top800wts, paste0("VisANTInput-", modules, "-top800ConnectedSorted.txt", sep=""),row.names=F, col.names=F, quote=F)
+  #Connectivity ranks
+  vis_rank_top800wts=vis_top800wts
+  colnames(vis_rank_top800wts)=c("FromGene", "ToGene", "thresold", "VisANTID", "Weights_kIM_IM")
+  vis_rank_top800wts$rank<- rank(-(vis_rank_top800wts$Weights_kIM_IM)) #This gives the highest weight the highest rank
+  #export output
+  write.table(vis_rank_top800wts, paste0("VisANTRanks-", modules, "-top800ConnectedRankedByWeight.txt", sep=""),row.names=F, quote=F)
+  
+}
+```
+
+#Cytoscape Export 1
+```{r}
+#Export using already generated TOM and power
+TOM = TOM
+for (i in unique(dat1GeneMod$dynamicLabels)){
+  #We use original TOM that was used to build the modules. This is a matrix of matrices, with rows=columns=number of genes input into WGCNA. 
+  TOM = TOM
+  
+  #Select modules
+  modules= i
+  modules
+  
+  #We have many diffent moduledynalicLabels this function only keeps those moduledynamicLabels that match with our selected module name  
+  inModule=is.finite(match(dynamicLabels,modules))
+  #Select only those genes that are in the selected module
+  genes=names(datExpr2)
+  modGenes=genes[inModule]
+  length(modGenes)
+  #this number should match with the number of genes in the selected module name
+  
+  #Select the corresponding Topological Overlap for the selected module i.e. only those genes are selected that belong to the selected module
+  modTOM = TOM[inModule, inModule]
+  dimnames(modTOM) = list(modGenes, modGenes)
+  
+  #Export the network into edge and node list files for Cytoscape for the selected module and use as input for cytoscape
+  cyt = exportNetworkToCytoscape(modTOM,
+                                 edgeFile=paste("CytoEdge",paste(modules,collapse="-"),"allConnected.txt",sep=""),
+                                 nodeFile=paste("CytoNode",paste(modules,collapse="-"),"allConnected.txt",sep=""),
+                                 weighted = TRUE, threshold = 0.02,nodeNames=modGenes,
+                                 altNodeNames = modGenes, nodeAttr = dynamicLabels[inModule])
+}
+```
+
+#Step17 Organization of files
+```{r}
+#Save .RData this contains the entire input and results. 
+save.image(file="WGCNA_InputAndResults.RData")
+```
+
+```{r}
+library(filesstrings)
+dir.create("ForCytoscapeInput")
+file.move(list.files(pattern='CytoEdge*'), "ForCytoscapeInput")
+file.move(list.files(pattern='CytoNode*'), "ForCytoscapeInput")
+
+dir.create("ForVisANTInput")
+file.move(list.files(pattern='VisANTInput-.*'), "ForVisANTInput")
+file.move(list.files(pattern='VisANTRanks-.*'), "ForVisANTInput")
+
+dir.create("INSERTNAME_Genes&RanksBycolors&labels")
+file.move(list.files(pattern='ForGenesInModule-.*'), "INSERTNAME_Genes&RanksBycolors&labels")
+file.move(list.files(pattern = "INSERTNAME_.*.txt"), "INSERTNAME_Genes&RanksBycolors&labels")
+
+dir.create("INSERTNAME_Plots")
+file.move(list.files(pattern = '*.pdf'), "INSERTNAME_Plots")
+
+dir.create("INSERTNAME_Traits")
+file.move(list.files(pattern = "Mod_.*.sig.csv"), "INSERTNAME_Traits")
+file.move(list.files(pattern = "*TraitCor.csv"), "INSERTNAME_Traits")
+
+dir.create("INSERTNAME_Normalizations")
+file.move(list.files(pattern = "INSERTNAME_log*"), "INSERTNAME_Normalizations")
+file.move(list.files(pattern = "INSERTNAME_CPM.csv"), "INSERTNAME_Normalizations")
+file.move(list.files(pattern = "INSERTNAME_RPKM.csv"), "INSERTNAME_Normalizations")
+file.move(list.files(pattern = "INSERTNAME_TPM.csv"), "INSERTNAME_Normalizations")
+file.move(list.files(pattern = "INSERTNAME_VST.csv"), "INSERTNAME_Normalizations")
+file.move(list.files(pattern = "INSERTNAME_Count_merged_matchedToGtf.csv"), "INSERTNAME_Normalizations")
+
+
+#remove extra files
+file.remove(list.files(pattern = "INSERTNAME_final_modules.csv"))
+file.remove(list.files(pattern = "INSERTNAME_final_modules_labels.csv"))
+
+dir.create("INSERTNAME_ModuleSummary")
+file.move(list.files(pattern = "INSERTNAME_datExpr2*"), "INSERTNAME_ModuleSummary")
+file.move(list.files(pattern = "INSERTNAME_final_dynamiccolors.csv"), "INSERTNAME_ModuleSummary")
+file.move(list.files(pattern = "INSERTNAME_final_dynamiclabels.csv"), "INSERTNAME_ModuleSummary")
+file.move(list.files(pattern = "INSERTNAME_final_dynamiccolors_sorted.csv"), "INSERTNAME_ModuleSummary")
+file.move(list.files(pattern = "INSERTNAME_final_dynamiclabels_sorted.csv"), "INSERTNAME_ModuleSummary")
+
+#remove extra files
+file.remove(list.files(pattern="dat1GeneLabel.csv"))
+file.remove(list.files(pattern="tdatExpr.csv"))
+file.remove(list.files(pattern="PaperTablewithExpr.csv"))
+file.remove(list.files(pattern="*.RData")) #optional deletion of .RData
+```
+
+#Step18 Save version numbers for reproducibility and version control
+```{r}
+#this shows the version of packages and softwares used
+sessionInfo()
+toLatex(sessionInfo())
+#save.image(file='INSERTNAME.RData')
+```
