@@ -4,7 +4,6 @@
 Contents: 
 
 01_RNAseq_parallel_paired_reverse.sh	(RNA quantification of data from GEO)
-
 02_correlation.R	(Oligodendrocyte gene expression correlation across regions)
 
 03_DESeq2.R (Differential gene expression using negative binomial distribution)
