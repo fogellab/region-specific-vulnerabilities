@@ -1,5 +1,5 @@
 #!/bin/bash
-for file in `find /saved/home/smukherjee/HinmanNew/HinmanNew2018/raw_fastq/ -name "*gz"`;
+for file in `find raw_fastq/ -name "*gz"`;
 do
 samp=${file::-11}
 name=`basename $samp`
