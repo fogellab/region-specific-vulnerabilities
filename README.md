@@ -1,4 +1,5 @@
-# Code supporting Tommasini D., Fox R., Ngo K.J., Hinman J.D., Fogel B.F. (2022). Alterations in oligodendrocyte transcriptional networks reveal region-specific vulnerabilities to neurological disease. IScience. 
+# Code supporting Tommasini, D, Fox, R, Ngo, KJ, Hinman, JD, Fogel, BL (2023). Alterations in oligodendrocyte transcriptional networks reveal region-specific vulnerabilities to neurological disease. iScience, 26, 4:106358. 
+URL: https://doi.org/10.1016/j.isci.2023.106358
 
 Contents: 
 
